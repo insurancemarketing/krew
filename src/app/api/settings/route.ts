@@ -11,7 +11,7 @@ const ALLOWED_KEYS = [
 /** GET /api/settings — return existing config values (keys only, values masked) */
 export async function GET() {
   const supabase = createServerClient();
-  const { data, error } = await supabase
+  const { data, error } = await (supabase as any)
     .from("config")
     .select("key, value")
     .in("key", ALLOWED_KEYS);
@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
 
   for (const key of ALLOWED_KEYS) {
     if (body[key] !== undefined) {
-      const { error } = await supabase.from("config").upsert(
+      const { error } = await (supabase as any).from("config").upsert(
         { key, value: body[key] },
         { onConflict: "key" }
       );
