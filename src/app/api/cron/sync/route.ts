@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { syncGHLContacts } from "@/lib/sync/ghl-sync";
-import { syncFacebookAds } from "@/lib/sync/fb-sync";
 
 /**
  * GET /api/cron/sync
@@ -19,16 +18,6 @@ export async function GET(request: NextRequest) {
 
   const results: Record<string, unknown> = {};
   const errors: string[] = [];
-
-  // Sync Facebook Ads first so ad UUIDs exist when GHL contacts reference them
-  try {
-    const fbResult = await syncFacebookAds();
-    results.facebook = fbResult;
-    if (fbResult.errors.length) errors.push(...fbResult.errors);
-  } catch (err) {
-    errors.push(`FB sync threw: ${String(err)}`);
-    results.facebook = { error: String(err) };
-  }
 
   // Sync GHL Contacts
   try {
