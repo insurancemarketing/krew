@@ -317,7 +317,7 @@ export default function ImportPage() {
       }
 
       console.log("[import] Done:", data);
-      setResult(data as ImportResult);
+      setResult(data as unknown as ImportResult);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error("[import] Import failed:", msg, err);
