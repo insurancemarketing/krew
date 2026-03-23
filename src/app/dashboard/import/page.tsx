@@ -424,8 +424,11 @@ export default function ImportPage() {
       setStep("Saving to Supabase…");
       await tick();
 
-      const supabase = getSupabaseClient();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const supabase = getSupabaseClient() as any;
       const today = new Date().toISOString().split("T")[0];
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      console.log("[import] NEXT_PUBLIC_SUPABASE_URL:", (globalThis as any).process?.env?.NEXT_PUBLIC_SUPABASE_URL);
 
       // 4a. Upsert all FB ads
       const adsToUpsert = [...fbByName.values()].map((fb) => ({
