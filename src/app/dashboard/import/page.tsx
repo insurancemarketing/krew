@@ -3,6 +3,11 @@
 import { useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabaseClient } from "@/lib/supabase/client";
+import {
+  saveToLocalStorage,
+  type LocalAdStat,
+  type LocalImportData,
+} from "@/lib/localData";
 
 // ---------------------------------------------------------------------------
 // CSV parsers
@@ -66,7 +71,40 @@ function slugify(str: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// DropZone component
+// Auto-suggest: find best FB ad name for a utm_content value
+// Splits both on word boundaries and checks overlap.
+// ---------------------------------------------------------------------------
+function suggestMatch(utmContent: string, fbAdNames: string[]): string {
+  if (!fbAdNames.length) return "";
+  // exact case-insensitive match first
+  const exact = fbAdNames.find(
+    (n) => n.toLowerCase() === utmContent.toLowerCase()
+  );
+  if (exact) return exact;
+
+  const utmWords = utmContent
+    .toLowerCase()
+    .split(/[-_\s]+/)
+    .filter((w) => w.length > 2);
+  if (!utmWords.length) return "";
+
+  let best = "";
+  let bestScore = 0;
+  for (const adName of fbAdNames) {
+    const adWords = adName.toLowerCase().split(/[-_\s]+/);
+    const score = utmWords.filter((w) =>
+      adWords.some((aw) => aw.includes(w) || w.includes(aw))
+    ).length;
+    if (score > bestScore) {
+      bestScore = score;
+      best = adName;
+    }
+  }
+  return bestScore >= 1 ? best : "";
+}
+
+// ---------------------------------------------------------------------------
+// DropZone
 // ---------------------------------------------------------------------------
 interface DropZoneProps {
   label: string;
@@ -74,18 +112,17 @@ interface DropZoneProps {
   file: File | null;
   onFile: (file: File, content: string) => void;
   preview: { headers: string[]; rows: string[][] } | null;
+  optional?: boolean;
 }
 
-function DropZone({ label, hint, file, onFile, preview }: DropZoneProps) {
+function DropZone({ label, hint, file, onFile, preview, optional }: DropZoneProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
   const handleFile = useCallback(
     (f: File) => {
       const reader = new FileReader();
-      reader.onload = (e) => {
-        onFile(f, (e.target?.result as string) ?? "");
-      };
+      reader.onload = (e) => onFile(f, (e.target?.result as string) ?? "");
       reader.readAsText(f);
     },
     [onFile]
@@ -106,7 +143,7 @@ function DropZone({ label, hint, file, onFile, preview }: DropZoneProps) {
       <div
         role="button"
         tabIndex={0}
-        className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 cursor-pointer transition-colors min-h-[160px] ${
+        className={`flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 cursor-pointer transition-colors min-h-[140px] ${
           dragging
             ? "border-blue-400 bg-blue-50"
             : file
@@ -141,16 +178,18 @@ function DropZone({ label, hint, file, onFile, preview }: DropZoneProps) {
         ) : (
           <>
             <svg className="h-8 w-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
             </svg>
-            <p className="mt-2 text-sm font-medium text-gray-700">{label}</p>
+            <p className="mt-2 text-sm font-medium text-gray-700">
+              {label}
+              {optional && <span className="ml-1 text-xs font-normal text-gray-400">(optional)</span>}
+            </p>
             <p className="text-xs text-gray-500">Drag &amp; drop or click to upload</p>
           </>
         )}
       </div>
-
       <p className="text-xs text-gray-500 leading-relaxed">{hint}</p>
-
       {preview && preview.headers.length > 0 && (
         <div className="overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm">
           <div className="overflow-x-auto">
@@ -185,12 +224,107 @@ function DropZone({ label, hint, file, onFile, preview }: DropZoneProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Step indicator list
+// Mapping table
+// ---------------------------------------------------------------------------
+interface UtmGroup {
+  utmContent: string;
+  count: number;
+  hired: number;
+}
+
+interface MappingTableProps {
+  groups: UtmGroup[];
+  fbAdNames: string[];
+  mappings: Record<string, string>;
+  onChange: (utmContent: string, fbAdName: string) => void;
+}
+
+function MappingTable({ groups, fbAdNames, mappings, onChange }: MappingTableProps) {
+  const hasFb = fbAdNames.length > 0;
+  return (
+    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+      <div className="px-5 py-4 border-b border-gray-100 bg-gray-50">
+        <h3 className="text-sm font-semibold text-gray-800">Map UTM Content → Facebook Ad</h3>
+        <p className="text-xs text-gray-500 mt-0.5">
+          {hasFb
+            ? "Match each utm_content value to a Facebook ad to include spend data. Suggestions are auto-filled — adjust as needed."
+            : "No Facebook CSV uploaded. All rows will show leads and hires only; spend will be —. Upload a FB CSV to add spend data."}
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="bg-gray-50 border-b border-gray-100">
+            <tr>
+              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                utm_content (GHL)
+              </th>
+              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                Leads
+              </th>
+              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                Hired
+              </th>
+              <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                {hasFb ? "Facebook Ad" : "Facebook Ad (no CSV)"}
+              </th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {groups.map(({ utmContent, count, hired }) => {
+              const matched = hasFb && !!(mappings[utmContent] ?? "");
+              return (
+                <tr key={utmContent} className="hover:bg-gray-50/60">
+                  <td className="px-4 py-2.5">
+                    <span className="font-mono text-xs text-gray-700 bg-gray-100 px-1.5 py-0.5 rounded">
+                      {utmContent}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 text-gray-600 text-sm">{count}</td>
+                  <td className="px-4 py-2.5 text-gray-600 text-sm">{hired}</td>
+                  <td className="px-4 py-2.5">
+                    {hasFb ? (
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={mappings[utmContent] ?? ""}
+                          onChange={(e) => onChange(utmContent, e.target.value)}
+                          className="w-full max-w-sm rounded-md border border-gray-200 px-2 py-1 text-xs bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        >
+                          <option value="">— No match (leads/hires only) —</option>
+                          {fbAdNames.map((name) => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </select>
+                        {matched && (
+                          <svg className="h-4 w-4 shrink-0 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-gray-400 italic">—</span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {hasFb && (
+        <div className="px-5 py-3 border-t border-gray-100 bg-gray-50 text-xs text-gray-400">
+          {Object.keys(mappings).filter((k) => mappings[k]).length} of {groups.length} rows mapped to a Facebook ad
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step indicator
 // ---------------------------------------------------------------------------
 const STEPS = [
   "Parsing GHL CSV…",
-  "Parsing Facebook Ads CSV…",
-  "Matching ads to contacts…",
+  "Computing ad stats…",
   "Saving to Supabase…",
 ] as const;
 
@@ -228,6 +362,8 @@ function StepList({ currentStep }: { currentStep: string | null }) {
 // ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
+type Phase = "upload" | "mapping" | "processing" | "done";
+
 interface ImportResult {
   contactsImported: number;
   adsMatched: number;
@@ -237,6 +373,7 @@ interface ImportResult {
 export default function ImportPage() {
   const router = useRouter();
 
+  // Upload state
   const [ghlFile, setGhlFile] = useState<File | null>(null);
   const [fbFile, setFbFile] = useState<File | null>(null);
   const [ghlContent, setGhlContent] = useState<string | null>(null);
@@ -244,16 +381,23 @@ export default function ImportPage() {
   const [ghlPreview, setGhlPreview] = useState<{ headers: string[]; rows: string[][] } | null>(null);
   const [fbPreview, setFbPreview] = useState<{ headers: string[]; rows: string[][] } | null>(null);
 
-  const [processing, setProcessing] = useState(false);
+  // Mapping state
+  const [utmGroups, setUtmGroups] = useState<UtmGroup[]>([]);
+  const [fbAdNames, setFbAdNames] = useState<string[]>([]);
+  const [mappings, setMappings] = useState<Record<string, string>>({});
+
+  // Phase + progress
+  const [phase, setPhase] = useState<Phase>("upload");
   const [step, setStep] = useState<string | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const tick = () => new Promise<void>((r) => setTimeout(r, 60));
 
   const handleGhlFile = useCallback((file: File, content: string) => {
     setGhlFile(file);
     setGhlContent(content);
     setGhlPreview(parseCSVPreview(content));
-    setResult(null);
     setError(null);
   }, []);
 
@@ -261,286 +405,285 @@ export default function ImportPage() {
     setFbFile(file);
     setFbContent(content);
     setFbPreview(parseCSVPreview(content));
-    setResult(null);
     setError(null);
   }, []);
 
-  // Yield to let React re-render the step label before the next operation
-  const tick = () => new Promise<void>((r) => setTimeout(r, 60));
+  // Called when user clicks "Review Mappings" (both CSVs) or
+  // "Process GHL Only" (GHL only, no FB)
+  const handleReviewMappings = () => {
+    if (!ghlContent) return;
+
+    // Parse GHL to extract utm_content groups
+    const ghlRows = parseCSV(ghlContent);
+    console.log("[import] GHL rows for mapping:", ghlRows.length);
+
+    const groupMap = new Map<string, { count: number; hired: number }>();
+    for (const row of ghlRows) {
+      const utm = (row["utm_content"] ?? "").trim() || "(none)";
+      const existing = groupMap.get(utm) ?? { count: 0, hired: 0 };
+      existing.count++;
+      const tags = (row["Tags"] ?? "")
+        .split(",")
+        .map((t) => t.trim().toLowerCase());
+      if (tags.indexOf("hired") !== -1) existing.hired++;
+      groupMap.set(utm, existing);
+    }
+
+    const groups: UtmGroup[] = [...groupMap.entries()]
+      .map(([utmContent, stats]) => ({ utmContent, ...stats }))
+      .sort((a, b) => b.count - a.count);
+
+    // Parse FB ad names if available
+    const names: string[] = [];
+    if (fbContent) {
+      const fbRows = parseCSV(fbContent);
+      console.log("[import] FB rows for mapping:", fbRows.length);
+      for (const row of fbRows) {
+        const name = (row["Ad name"] ?? "").trim();
+        if (name && names.indexOf(name) === -1) names.push(name);
+      }
+    }
+
+    // Auto-suggest mappings
+    const auto: Record<string, string> = {};
+    for (const { utmContent } of groups) {
+      auto[utmContent] = suggestMatch(utmContent, names);
+    }
+
+    console.log("[import] utm groups:", groups.length, "| FB ad names:", names.length);
+    console.log("[import] Auto-suggested mappings:", auto);
+
+    setUtmGroups(groups);
+    setFbAdNames(names);
+    setMappings(auto);
+    setPhase("mapping");
+  };
 
   const handleProcess = async () => {
-    if (!ghlContent || !fbContent) return;
-    setProcessing(true);
+    if (!ghlContent) return;
+    setPhase("processing");
     setError(null);
-    setResult(null);
 
     try {
-      // -----------------------------------------------------------------------
       // Step 1 — Parse GHL CSV
-      // -----------------------------------------------------------------------
       setStep("Parsing GHL CSV…");
       await tick();
 
       const ghlRows = parseCSV(ghlContent);
-      console.log(
-        "[import] GHL parsed:", ghlRows.length, "rows",
-        "| cols:", Object.keys(ghlRows[0] ?? {})
-      );
+      console.log("[import] GHL parsed:", ghlRows.length, "rows | cols:", Object.keys(ghlRows[0] ?? {}));
 
-      // -----------------------------------------------------------------------
-      // Step 2 — Parse Facebook Ads CSV
-      // -----------------------------------------------------------------------
-      setStep("Parsing Facebook Ads CSV…");
-      await tick();
+      // Parse FB CSV (if available)
+      const fbRows = fbContent ? parseCSV(fbContent) : [];
+      console.log("[import] FB parsed:", fbRows.length, "rows");
 
-      const fbRows = parseCSV(fbContent);
-      console.log(
-        "[import] FB parsed:", fbRows.length, "rows",
-        "| cols:", Object.keys(fbRows[0] ?? {})
-      );
-
-      // Build FB lookup: lowercase(Ad name) → ad data
-      type FbAd = { fbAdId: string; name: string; spend: number; impressions: number; clicks: number };
-      const fbByName = new Map<string, FbAd>();
-
+      // Build FB data map: lowercase(Ad name) → data
+      type FbData = { fbAdId: string; spend: number; impressions: number; clicks: number };
+      const fbDataMap = new Map<string, FbData>();
       for (const row of fbRows) {
         const adName = (row["Ad name"] ?? "").trim();
-        if (!adName) {
-          console.warn("[import] FB row missing 'Ad name', skipping:", row);
-          continue;
-        }
-        const rawFbAdId = (row["Ad ID"] ?? "").trim();
-        const entry: FbAd = {
-          // Use real FB Ad ID if present, otherwise fall back to slugified name
-          fbAdId: rawFbAdId || slugify(adName),
-          name: adName,
+        if (!adName) continue;
+        fbDataMap.set(adName, {
+          fbAdId: (row["Ad ID"] ?? "").trim() || slugify(adName),
           spend: parseFloat((row["Amount spent (USD)"] ?? "0").replace(/[$,\s]/g, "")) || 0,
           impressions: parseInt(row["Impressions"] ?? "0", 10) || 0,
           clicks: parseInt(row["Link clicks"] ?? "0", 10) || 0,
-        };
-        fbByName.set(adName.toLowerCase(), entry);
-        console.log("[import] FB ad:", entry);
+        });
+        console.log("[import] FB ad data:", adName, fbDataMap.get(adName));
       }
-      console.log("[import] FB ad map size:", fbByName.size);
 
-      // -----------------------------------------------------------------------
-      // Step 3 — Match GHL contacts to FB ads via utm_content = Ad name
-      // -----------------------------------------------------------------------
-      setStep("Matching ads to contacts…");
+      // Step 2 — Compute per-utm_content stats
+      setStep("Computing ad stats…");
       await tick();
 
-      type ContactRecord = {
-        ghl_contact_id: string;
-        name: string | null;
-        email: string | null;
-        phone: string | null;
-        utm_content: string | null;
-        utm_campaign: string | null;
-        utm_medium: string | null;
-        fb_click_id: string | null;
-        tags: string[];
-        hired_at: string | null;
-        created_at: string;
-        // internal — resolved to UUID before upsert
-        _matchedAdKey: string | null;
-      };
+      // Re-compute groups from ghlRows (in case handleReviewMappings was skipped)
+      const groupMap = new Map<string, { contacts: typeof ghlRows; hired: number }>();
+      for (const row of ghlRows) {
+        const utm = (row["utm_content"] ?? "").trim() || "(none)";
+        const existing = groupMap.get(utm) ?? { contacts: [], hired: 0 };
+        existing.contacts.push(row);
+        const tags = (row["Tags"] ?? "").split(",").map((t) => t.trim().toLowerCase());
+        if (tags.indexOf("hired") !== -1) existing.hired++;
+        groupMap.set(utm, existing);
+      }
 
-      const contacts: ContactRecord[] = [];
       let hiredFound = 0;
       let adsMatched = 0;
+      const localAds: LocalAdStat[] = [];
 
-      for (const row of ghlRows) {
-        const contactId = (row["Contact Id"] ?? "").trim();
-        if (!contactId) {
-          console.warn("[import] GHL row missing 'Contact Id', skipping:", row);
-          continue;
-        }
+      for (const [utmContent, group] of groupMap) {
+        const fbAdName = mappings[utmContent] ?? "";
+        const fb = fbAdName ? fbDataMap.get(fbAdName) : null;
 
-        const firstName = (row["First Name"] ?? "").trim();
-        const lastName = (row["Last Name"] ?? "").trim();
-        const name = [firstName, lastName].filter(Boolean).join(" ") || null;
-        const email = (row["Email"] ?? "").trim().toLowerCase() || null;
-        const phone = (row["Phone"] ?? "").trim() || null;
+        const totalLeads = group.contacts.length;
+        const totalHired = group.hired;
+        const winRate = totalLeads > 0 ? (totalHired / totalLeads) * 100 : 0;
+        const totalSpend = fb?.spend ?? 0;
+        const costPerHire = totalHired > 0 && totalSpend > 0 ? totalSpend / totalHired : 0;
 
-        const rawTags = row["Tags"] ?? "";
-        const tags = rawTags
-          ? rawTags.split(",").map((t) => t.trim()).filter(Boolean)
-          : [];
-        const isHired = tags.some((t) => t.toLowerCase() === "hired");
+        hiredFound += totalHired;
+        if (fb) adsMatched++;
 
-        const utmContent = (row["utm_content"] ?? "").trim() || null;
-        const utmCampaign = (row["utm_campaign"] ?? "").trim() || null;
-        const utmMedium = (row["utm_medium"] ?? "").trim() || null;
-        const fbClickId = (row["fbclid"] ?? "").trim() || null;
+        const id = slugify(utmContent === "(none)" ? "no-utm" : utmContent);
+        const fbAdId = fb?.fbAdId ?? id;
 
-        const rawCreated = (row["Created"] ?? "").trim();
-        const createdAt = rawCreated
-          ? new Date(rawCreated).toISOString()
-          : new Date().toISOString();
+        console.log(
+          `[import] "${utmContent}" → FB="${fbAdName || "none"}" | leads=${totalLeads} hired=${totalHired} spend=$${totalSpend}`
+        );
 
-        let hiredAt: string | null = null;
-        if (isHired) {
-          hiredAt = createdAt;
-          hiredFound++;
-          console.log(`[import] Hired: "${name}" tags=${JSON.stringify(tags)}`);
-        }
-
-        // Match utm_content → FB Ad name (exact, case-insensitive)
-        let matchedAdKey: string | null = null;
-        if (utmContent) {
-          const key = utmContent.toLowerCase();
-          if (fbByName.has(key)) {
-            matchedAdKey = key;
-            adsMatched++;
-            console.log(`[import] Matched: "${name}" utm_content="${utmContent}" → "${fbByName.get(key)!.name}"`);
-          } else {
-            console.warn(`[import] No FB ad for utm_content="${utmContent}" (contact: "${name}")`);
-          }
-        }
-
-        contacts.push({
-          ghl_contact_id: `csv-${contactId}`,
-          name,
-          email,
-          phone,
-          utm_content: utmContent,
-          utm_campaign: utmCampaign,
-          utm_medium: utmMedium,
-          fb_click_id: fbClickId,
-          tags,
-          hired_at: hiredAt,
-          created_at: createdAt,
-          _matchedAdKey: matchedAdKey,
+        localAds.push({
+          id,
+          fb_ad_id: fbAdId,
+          name: utmContent,
+          status: "ACTIVE",
+          campaign_id: null,
+          ad_set_id: null,
+          total_leads: totalLeads,
+          total_hired: totalHired,
+          win_rate: winRate,
+          total_spend: totalSpend,
+          cost_per_hire: costPerHire,
+          impressions: fb?.impressions ?? 0,
+          clicks: fb?.clicks ?? 0,
         });
       }
 
+      const totalLeads = localAds.reduce((s, a) => s + a.total_leads, 0);
       console.log(
-        `[import] Match summary: ${contacts.length} contacts, ${hiredFound} hired, ${adsMatched} with ad match`
+        `[import] Stats: ${totalLeads} contacts, ${hiredFound} hired, ${adsMatched} FB ads matched`
       );
 
-      // -----------------------------------------------------------------------
-      // Step 4 — Save to Supabase
-      // -----------------------------------------------------------------------
+      // Save to localStorage FIRST — works even if Supabase is unavailable
+      const localData: LocalImportData = {
+        importedAt: new Date().toISOString(),
+        ads: localAds,
+      };
+      saveToLocalStorage(localData);
+
+      // Step 3 — Save to Supabase (best-effort)
       setStep("Saving to Supabase…");
       await tick();
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const supabase = getSupabaseClient() as any;
-      const today = new Date().toISOString().split("T")[0];
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      console.log("[import] NEXT_PUBLIC_SUPABASE_URL:", (globalThis as any).process?.env?.NEXT_PUBLIC_SUPABASE_URL);
+      if (!supabase) {
+        console.warn("[import] Supabase not configured — data saved to localStorage only");
+      } else {
+        const today = new Date().toISOString().split("T")[0];
 
-      // 4a. Upsert all FB ads
-      const adsToUpsert = [...fbByName.values()].map((fb) => ({
-        fb_ad_id: fb.fbAdId,
-        name: fb.name,
-        status: "ACTIVE",
-      }));
-
-      console.log("[import] Upserting", adsToUpsert.length, "ads...");
-      if (adsToUpsert.length > 0) {
+        // Upsert ads
+        const adsToUpsert = localAds.map((a) => ({
+          fb_ad_id: a.fb_ad_id,
+          name: a.name,
+          status: "ACTIVE",
+        }));
         const { error: adsErr } = await supabase
           .from("ads")
           .upsert(adsToUpsert, { onConflict: "fb_ad_id" });
-        if (adsErr) {
-          console.error("[import] ads upsert error:", adsErr);
-          throw new Error(`ads upsert: ${adsErr.message}`);
+        if (adsErr) console.error("[import] ads upsert error:", adsErr.message);
+
+        // Fetch UUIDs
+        const { data: adRows, error: adFetchErr } = await supabase
+          .from("ads")
+          .select("id, fb_ad_id")
+          .in("fb_ad_id", localAds.map((a) => a.fb_ad_id));
+        if (adFetchErr) console.error("[import] ads fetch error:", adFetchErr.message);
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const fbAdIdToUuid = new Map<string, string>(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          (adRows ?? []).map((r: any) => [r.fb_ad_id, r.id] as [string, string])
+        );
+        console.log("[import] Ad UUID map size:", fbAdIdToUuid.size);
+
+        // Upsert contacts in chunks of 500
+        const contactsToUpsert = [];
+        for (const [utmContent, group] of groupMap) {
+          const adStat = localAds.find((a) => a.name === utmContent);
+          const adUuid = adStat ? (fbAdIdToUuid.get(adStat.fb_ad_id) ?? null) : null;
+
+          for (const row of group.contacts) {
+            const contactId = (row["Contact Id"] ?? "").trim();
+            if (!contactId) continue;
+            const tags = (row["Tags"] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+            const isHired = tags.some((t) => t.toLowerCase() === "hired");
+            const rawCreated = (row["Created"] ?? "").trim();
+            const createdAt = rawCreated
+              ? new Date(rawCreated).toISOString()
+              : new Date().toISOString();
+
+            contactsToUpsert.push({
+              ghl_contact_id: `csv-${contactId}`,
+              name:
+                [(row["First Name"] ?? "").trim(), (row["Last Name"] ?? "").trim()]
+                  .filter(Boolean)
+                  .join(" ") || null,
+              email: (row["Email"] ?? "").trim().toLowerCase() || null,
+              phone: (row["Phone"] ?? "").trim() || null,
+              utm_content: utmContent === "(none)" ? null : utmContent,
+              utm_campaign: (row["utm_campaign"] ?? "").trim() || null,
+              utm_medium: (row["utm_medium"] ?? "").trim() || null,
+              fb_click_id: (row["fbclid"] ?? "").trim() || null,
+              fb_ad_id: adUuid,
+              tags,
+              hired_at: isHired ? createdAt : null,
+              created_at: createdAt,
+            });
+          }
+        }
+
+        console.log("[import] Upserting", contactsToUpsert.length, "contacts to Supabase...");
+        for (let i = 0; i < contactsToUpsert.length; i += 500) {
+          const chunk = contactsToUpsert.slice(i, i + 500);
+          const { error: cErr } = await supabase
+            .from("contacts")
+            .upsert(chunk, { onConflict: "ghl_contact_id" });
+          if (cErr) console.error(`[import] contacts chunk ${Math.floor(i / 500) + 1} error:`, cErr.message);
+          else console.log(`[import] Contacts saved: ${Math.min(i + 500, contactsToUpsert.length)}/${contactsToUpsert.length}`);
+        }
+
+        // Upsert ad_spend for ads with FB data
+        const spendRows = localAds
+          .filter((a) => a.total_spend > 0)
+          .map((a) => ({
+            fb_ad_id: a.fb_ad_id,
+            ad_id: fbAdIdToUuid.get(a.fb_ad_id) ?? null,
+            date: today,
+            spend: a.total_spend,
+            impressions: a.impressions,
+            clicks: a.clicks,
+          }));
+
+        if (spendRows.length > 0) {
+          const { error: spendErr } = await supabase
+            .from("ad_spend")
+            .upsert(spendRows, { onConflict: "fb_ad_id,date" });
+          if (spendErr) console.error("[import] ad_spend upsert error:", spendErr.message);
+          else console.log("[import] ad_spend upserted:", spendRows.length, "rows");
         }
       }
 
-      // 4b. Fetch UUIDs for all ads we just upserted
-      const fbAdIds = adsToUpsert.map((a) => a.fb_ad_id);
-      const { data: adRows, error: adFetchErr } = await supabase
-        .from("ads")
-        .select("id, fb_ad_id, name")
-        .in("fb_ad_id", fbAdIds);
-
-      if (adFetchErr) {
-        console.error("[import] ads fetch error:", adFetchErr);
-        throw new Error(`ads fetch: ${adFetchErr.message}`);
-      }
-
-      // Build: lowercase(adName) → UUID
-      const adNameToUuid = new Map<string, string>();
-      for (const [key, fb] of fbByName) {
-        const match = (adRows ?? []).find((r) => r.fb_ad_id === fb.fbAdId);
-        if (match) {
-          adNameToUuid.set(key, match.id);
-        } else {
-          console.warn("[import] Could not find UUID for ad:", fb.name);
-        }
-      }
-      console.log("[import] Ad name → UUID:", [...adNameToUuid].map(([k, v]) => `${k}=${v}`).join(", "));
-
-      // 4c. Upsert contacts in chunks of 500
-      const contactsToUpsert = contacts.map((c) => ({
-        ghl_contact_id: c.ghl_contact_id,
-        name: c.name,
-        email: c.email,
-        phone: c.phone,
-        utm_content: c.utm_content,
-        utm_campaign: c.utm_campaign,
-        utm_medium: c.utm_medium,
-        fb_click_id: c.fb_click_id,
-        fb_ad_id: c._matchedAdKey ? (adNameToUuid.get(c._matchedAdKey) ?? null) : null,
-        tags: c.tags,
-        hired_at: c.hired_at,
-        created_at: c.created_at,
-      }));
-
-      console.log("[import] Upserting", contactsToUpsert.length, "contacts...");
-      let contactsImported = 0;
-      const CHUNK = 500;
-      for (let i = 0; i < contactsToUpsert.length; i += CHUNK) {
-        const chunk = contactsToUpsert.slice(i, i + CHUNK);
-        const { error: cErr } = await supabase
-          .from("contacts")
-          .upsert(chunk, { onConflict: "ghl_contact_id" });
-        if (cErr) {
-          console.error(`[import] contacts upsert error (chunk ${i / CHUNK + 1}):`, cErr);
-          throw new Error(`contacts upsert: ${cErr.message}`);
-        }
-        contactsImported += chunk.length;
-        console.log(`[import] Contacts saved: ${contactsImported}/${contactsToUpsert.length}`);
-      }
-
-      // 4d. Upsert ad_spend (one row per ad per day)
-      const spendToUpsert = [...fbByName.values()].map((fb) => ({
-        fb_ad_id: fb.fbAdId,
-        ad_id: adNameToUuid.get(fb.name.toLowerCase()) ?? null,
-        date: today,
-        spend: fb.spend,
-        impressions: fb.impressions,
-        clicks: fb.clicks,
-      }));
-
-      if (spendToUpsert.length > 0) {
-        console.log("[import] Upserting", spendToUpsert.length, "ad_spend rows...");
-        const { error: spendErr } = await supabase
-          .from("ad_spend")
-          .upsert(spendToUpsert, { onConflict: "fb_ad_id,date" });
-        if (spendErr) {
-          console.error("[import] ad_spend upsert error:", spendErr);
-          throw new Error(`ad_spend upsert: ${spendErr.message}`);
-        }
-      }
-
-      console.log(
-        `[import] Complete — contacts: ${contactsImported}, ads matched: ${adsMatched}, hired: ${hiredFound}`
-      );
-      setResult({ contactsImported, adsMatched, hiredFound });
+      console.log(`[import] Complete — contacts: ${totalLeads}, hired: ${hiredFound}, FB ads matched: ${adsMatched}`);
+      setResult({ contactsImported: totalLeads, adsMatched, hiredFound });
+      setPhase("done");
 
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("[import] Import failed:", msg, err);
+      console.error("[import] Error:", msg, err);
       setError(msg);
+      setPhase("mapping"); // drop back to mapping so user can retry
     } finally {
-      setProcessing(false);
       setStep(null);
     }
   };
 
-  const bothReady = !!ghlFile && !!fbFile;
+  const handleReset = () => {
+    setPhase("upload");
+    setResult(null);
+    setError(null);
+    setUtmGroups([]);
+    setFbAdNames([]);
+    setMappings({});
+  };
 
   return (
     <div className="space-y-8 max-w-5xl">
@@ -548,66 +691,128 @@ export default function ImportPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Import Data</h1>
         <p className="mt-1 text-sm text-gray-500">
-          Upload your GHL contacts and Facebook Ads CSV exports to populate the dashboard.
+          Upload your GHL contacts CSV to see leads and hires per ad.
+          Optionally add a Facebook Ads CSV to include spend data.
         </p>
       </div>
 
-      {/* Upload zones */}
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
-        <div className="space-y-2">
-          <h2 className="text-sm font-semibold text-gray-800">GHL Contacts CSV</h2>
-          <DropZone
-            label="GHL Contacts CSV"
-            hint="Expected columns: Contact Id, First Name, Last Name, Phone, Email, Created, Tags, fbclid, utm_content, utm_campaign, utm_medium, utm_keyword"
-            file={ghlFile}
-            onFile={handleGhlFile}
-            preview={ghlPreview}
-          />
-        </div>
+      {/* ── UPLOAD PHASE ── */}
+      {phase === "upload" && (
+        <>
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
+            <div className="space-y-2">
+              <h2 className="text-sm font-semibold text-gray-800">GHL Contacts CSV</h2>
+              <DropZone
+                label="GHL Contacts CSV"
+                hint="Columns used: Contact Id, First Name, Last Name, Phone, Email, Created, Tags, fbclid, utm_content, utm_campaign, utm_medium"
+                file={ghlFile}
+                onFile={handleGhlFile}
+                preview={ghlPreview}
+              />
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-sm font-semibold text-gray-800">Facebook Ads CSV</h2>
+              <DropZone
+                label="Facebook Ads CSV"
+                hint="Columns used: Ad name, Amount spent (USD), Impressions, Link clicks, Ad ID. Skip this file to see leads/hires only."
+                file={fbFile}
+                onFile={handleFbFile}
+                preview={fbPreview}
+                optional
+              />
+            </div>
+          </div>
 
-        <div className="space-y-2">
-          <h2 className="text-sm font-semibold text-gray-800">Facebook Ads CSV</h2>
-          <DropZone
-            label="Facebook Ads CSV"
-            hint="Expected columns: Ad name, Amount spent (USD), Impressions, Link clicks, Ad ID"
-            file={fbFile}
-            onFile={handleFbFile}
-            preview={fbPreview}
-          />
-        </div>
-      </div>
+          {ghlFile && (
+            <div className="flex flex-wrap gap-3">
+              {fbFile ? (
+                <button
+                  onClick={handleReviewMappings}
+                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors shadow-sm"
+                >
+                  Review Mappings
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                  </svg>
+                </button>
+              ) : (
+                <button
+                  onClick={handleReviewMappings}
+                  className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors shadow-sm"
+                >
+                  Preview &amp; Process (GHL only)
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          )}
 
-      {/* Process button */}
-      {bothReady && !result && (
-        <div className="space-y-4">
-          <button
-            onClick={handleProcess}
-            disabled={processing}
-            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-sm"
-          >
-            {processing && (
-              <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+          {error && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 space-y-1">
+              <p className="font-semibold">Error</p>
+              <p className="font-mono text-xs break-all">{error}</p>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── MAPPING PHASE ── */}
+      {phase === "mapping" && (
+        <div className="space-y-6">
+          <MappingTable
+            groups={utmGroups}
+            fbAdNames={fbAdNames}
+            mappings={mappings}
+            onChange={(utm, fbName) =>
+              setMappings((prev) => ({ ...prev, [utm]: fbName }))
+            }
+          />
+
+          {error && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 space-y-1">
+              <p className="font-semibold">Processing failed — fix and retry</p>
+              <p className="font-mono text-xs break-all">{error}</p>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={handleProcess}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-blue-700 transition-colors shadow-sm"
+            >
+              Process Files
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
               </svg>
-            )}
-            {processing ? "Processing…" : "Process Files"}
-          </button>
-
-          {processing && <StepList currentStep={step} />}
+            </button>
+            <button
+              onClick={handleReset}
+              className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              ← Back
+            </button>
+          </div>
         </div>
       )}
 
-      {/* Error */}
-      {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 space-y-1">
-          <p className="font-semibold">Import failed</p>
-          <p className="font-mono text-xs break-all">{error}</p>
+      {/* ── PROCESSING PHASE ── */}
+      {phase === "processing" && (
+        <div className="space-y-4">
+          <div className="inline-flex items-center gap-2 text-sm font-medium text-gray-600">
+            <svg className="h-4 w-4 animate-spin text-blue-500" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+            </svg>
+            Processing…
+          </div>
+          <StepList currentStep={step} />
         </div>
       )}
 
-      {/* Success */}
-      {result && (
+      {/* ── DONE PHASE ── */}
+      {phase === "done" && result && (
         <div className="rounded-xl border border-green-200 bg-green-50 p-6 shadow-sm">
           <div className="flex items-start gap-3">
             <svg className="h-5 w-5 text-green-600 mt-0.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -616,23 +821,36 @@ export default function ImportPage() {
             <div className="flex-1">
               <p className="font-semibold text-green-800">Import complete!</p>
               <p className="mt-1 text-sm text-green-700">
-                {result.contactsImported} contact{result.contactsImported !== 1 ? "s" : ""}
+                {result.contactsImported.toLocaleString()} contact{result.contactsImported !== 1 ? "s" : ""}
                 {" · "}
                 {result.hiredFound} hire{result.hiredFound !== 1 ? "s" : ""}
-                {" · "}
-                {result.adsMatched} ad{result.adsMatched !== 1 ? "s" : ""} matched
+                {result.adsMatched > 0 && (
+                  <>{" · "}{result.adsMatched} FB ad{result.adsMatched !== 1 ? "s" : ""} matched</>
+                )}
+              </p>
+              <p className="mt-1 text-xs text-green-600">
+                Data saved to localStorage and{" "}
+                {getSupabaseClient() ? "Supabase" : "localStorage only (Supabase not configured)"}.
               </p>
             </div>
           </div>
-          <button
-            onClick={() => router.push("/dashboard")}
-            className="mt-4 inline-flex items-center gap-2 rounded-lg bg-green-700 px-4 py-2 text-sm font-medium text-white hover:bg-green-800 transition-colors"
-          >
-            View Dashboard
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-            </svg>
-          </button>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <button
+              onClick={() => router.push("/dashboard")}
+              className="inline-flex items-center gap-2 rounded-lg bg-green-700 px-4 py-2 text-sm font-medium text-white hover:bg-green-800 transition-colors"
+            >
+              View Dashboard
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+              </svg>
+            </button>
+            <button
+              onClick={handleReset}
+              className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              Import Another
+            </button>
+          </div>
         </div>
       )}
     </div>
