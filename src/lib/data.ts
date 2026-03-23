@@ -72,7 +72,7 @@ async function getAdSpendTotal(
     .from("ad_spend")
     .select("spend")
     .eq("ad_id", adId);
-  return (data ?? []).reduce((sum, r) => sum + (r.spend ?? 0), 0);
+  return (data ?? []).reduce((sum: number, r: any) => sum + (r.spend ?? 0), 0);
 }
 
 /** Get all ads with aggregated stats */
@@ -138,7 +138,7 @@ export async function getOverviewMetrics(): Promise<OverviewMetrics> {
     .select("spend");
 
   const totalSpend = (spendData ?? []).reduce(
-    (sum, r) => sum + (r.spend ?? 0),
+    (sum: number, r: any) => sum + (r.spend ?? 0),
     0
   );
   const avgCostPerHire =
