@@ -65,10 +65,10 @@ export interface AdDetailRow {
 
 /** Aggregate spend for an ad */
 async function getAdSpendTotal(
-  supabase: ReturnType<typeof createServerClient>,
+  supabase: any,
   adId: string
 ): Promise<number> {
-  const { data } = await (supabase as any)
+  const { data } = await supabase
     .from("ad_spend")
     .select("spend")
     .eq("ad_id", adId);
@@ -77,9 +77,10 @@ async function getAdSpendTotal(
 
 /** Get all ads with aggregated stats */
 export async function getAdsWithStats(): Promise<AdRow[]> {
-  const supabase = createServerClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const supabase = createServerClient() as any;
 
-  const { data: ads, error } = await (supabase as any)
+  const { data: ads, error } = await supabase
     .from("ads")
     .select("id, fb_ad_id, name, status, campaign_id, ad_set_id")
     .order("created_at", { ascending: false });
@@ -90,7 +91,7 @@ export async function getAdsWithStats(): Promise<AdRow[]> {
 
   for (const ad of ads) {
     // Contacts attributed to this ad
-    const { data: contacts } = await (supabase as any)
+    const { data: contacts } = await supabase
       .from("contacts")
       .select("id, hired_at")
       .eq("fb_ad_id", ad.id);
@@ -122,18 +123,19 @@ export async function getAdsWithStats(): Promise<AdRow[]> {
 
 /** Get overview metric cards */
 export async function getOverviewMetrics(): Promise<OverviewMetrics> {
-  const supabase = createServerClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const supabase = createServerClient() as any;
 
-  const { count: totalLeads } = await (supabase as any)
+  const { count: totalLeads } = await supabase
     .from("contacts")
     .select("id", { count: "exact", head: true });
 
-  const { count: totalHired } = await (supabase as any)
+  const { count: totalHired } = await supabase
     .from("contacts")
     .select("id", { count: "exact", head: true })
     .not("hired_at", "is", null);
 
-  const { data: spendData } = await (supabase as any)
+  const { data: spendData } = await supabase
     .from("ad_spend")
     .select("spend");
 
@@ -167,13 +169,14 @@ export async function getContacts(opts?: {
   page?: number;
   perPage?: number;
 }): Promise<{ contacts: ContactRow[]; total: number }> {
-  const supabase = createServerClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const supabase = createServerClient() as any;
   const page = opts?.page ?? 1;
   const perPage = opts?.perPage ?? 50;
   const from = (page - 1) * perPage;
   const to = from + perPage - 1;
 
-  let query = (supabase as any)
+  let query = supabase
     .from("contacts")
     .select(
       `id, ghl_contact_id, name, email, utm_source, utm_medium, utm_campaign,
@@ -218,9 +221,10 @@ export async function getContacts(opts?: {
 
 /** Get a single ad with full detail */
 export async function getAdDetail(adId: string): Promise<AdDetailRow | null> {
-  const supabase = createServerClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const supabase = createServerClient() as any;
 
-  const { data: ad } = await (supabase as any)
+  const { data: ad } = await supabase
     .from("ads")
     .select("*")
     .eq("id", adId)
@@ -229,7 +233,7 @@ export async function getAdDetail(adId: string): Promise<AdDetailRow | null> {
   if (!ad) return null;
 
   // All contacts
-  const { data: contacts } = await (supabase as any)
+  const { data: contacts } = await supabase
     .from("contacts")
     .select("id, name, email, hired_at, created_at")
     .eq("fb_ad_id", adId)

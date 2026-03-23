@@ -25,7 +25,8 @@ export async function syncGHLContacts(
   apiKey?: string,
   locationId?: string
 ): Promise<GHLSyncResult> {
-  const supabase = createServerClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const supabase = createServerClient() as any;
   const errors: string[] = [];
   let upserted = 0;
   let hired = 0;
@@ -126,7 +127,8 @@ export async function handleTagAddedWebhook(payload: {
   tag: string;
   locationId: string;
 }): Promise<void> {
-  const supabase = createServerClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const supabase = createServerClient() as any;
 
   // Upsert a pipeline event
   const { data: contactRow } = await supabase

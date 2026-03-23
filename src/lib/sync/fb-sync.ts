@@ -23,7 +23,8 @@ export async function syncFacebookAds(
   token?: string,
   adAccountId?: string
 ): Promise<FBSyncResult> {
-  const supabase = createServerClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const supabase = createServerClient() as any;
   const errors: string[] = [];
   let adsUpserted = 0;
   let spendRowsUpserted = 0;

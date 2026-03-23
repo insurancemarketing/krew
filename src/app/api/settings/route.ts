@@ -10,8 +10,9 @@ const ALLOWED_KEYS = [
 
 /** GET /api/settings — return existing config values (keys only, values masked) */
 export async function GET() {
-  const supabase = createServerClient();
-  const { data, error } = await (supabase as any)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const supabase = createServerClient() as any;
+  const { data, error } = await supabase
     .from("config")
     .select("key, value")
     .in("key", ALLOWED_KEYS);
@@ -39,12 +40,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const supabase = createServerClient();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const supabase = createServerClient() as any;
   const errors: string[] = [];
 
   for (const key of ALLOWED_KEYS) {
     if (body[key] !== undefined) {
-      const { error } = await (supabase as any).from("config").upsert(
+      const { error } = await supabase.from("config").upsert(
         { key, value: body[key] },
         { onConflict: "key" }
       );
