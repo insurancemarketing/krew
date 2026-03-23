@@ -71,6 +71,25 @@ function slugify(str: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Tag helpers
+// ---------------------------------------------------------------------------
+/** Strip emoji / non-ASCII chars, lowercase, trim a single tag string */
+function normalizeTag(s: string): string {
+  // Replace any character outside the ASCII printable range (covers all emoji)
+  return s.replace(/[^\x20-\x7E]/g, "").toLowerCase().trim();
+}
+
+/**
+ * Returns true if the raw Tags cell (comma-separated) contains a tag that,
+ * once emoji-stripped and lowercased, includes `needle`.
+ */
+function containsHiredTag(tagsCell: string, needle: string): boolean {
+  const norm = normalizeTag(needle);
+  if (!norm) return false;
+  return tagsCell.split(",").some((t) => normalizeTag(t).includes(norm));
+}
+
+// ---------------------------------------------------------------------------
 // Auto-suggest: find best FB ad name for a utm_content value
 // Splits both on word boundaries and checks overlap.
 // ---------------------------------------------------------------------------
@@ -373,6 +392,9 @@ interface ImportResult {
 export default function ImportPage() {
   const router = useRouter();
 
+  // Hired tag (customizable)
+  const [hiredTag, setHiredTag] = useState("recruitment - hire made");
+
   // Upload state
   const [ghlFile, setGhlFile] = useState<File | null>(null);
   const [fbFile, setFbFile] = useState<File | null>(null);
@@ -422,10 +444,7 @@ export default function ImportPage() {
       const utm = (row["utm_content"] ?? "").trim() || "(none)";
       const existing = groupMap.get(utm) ?? { count: 0, hired: 0 };
       existing.count++;
-      const tags = (row["Tags"] ?? "")
-        .split(",")
-        .map((t) => t.trim().toLowerCase());
-      if (tags.indexOf("hired") !== -1) existing.hired++;
+      if (containsHiredTag(row["Tags"] ?? "", hiredTag)) existing.hired++;
       groupMap.set(utm, existing);
     }
 
@@ -501,8 +520,7 @@ export default function ImportPage() {
         const utm = (row["utm_content"] ?? "").trim() || "(none)";
         const existing = groupMap.get(utm) ?? { contacts: [], hired: 0 };
         existing.contacts.push(row);
-        const tags = (row["Tags"] ?? "").split(",").map((t) => t.trim().toLowerCase());
-        if (tags.indexOf("hired") !== -1) existing.hired++;
+        if (containsHiredTag(row["Tags"] ?? "", hiredTag)) existing.hired++;
         groupMap.set(utm, existing);
       }
 
@@ -605,7 +623,7 @@ export default function ImportPage() {
             const contactId = (row["Contact Id"] ?? "").trim();
             if (!contactId) continue;
             const tags = (row["Tags"] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
-            const isHired = tags.some((t) => t.toLowerCase() === "hired");
+            const isHired = containsHiredTag(row["Tags"] ?? "", hiredTag);
             const rawCreated = (row["Created"] ?? "").trim();
             const createdAt = rawCreated
               ? new Date(rawCreated).toISOString()
@@ -721,6 +739,30 @@ export default function ImportPage() {
                 optional
               />
             </div>
+          </div>
+
+          {/* Hired tag config */}
+          <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm space-y-2">
+            <label className="text-sm font-semibold text-gray-800" htmlFor="hired-tag-input">
+              &ldquo;Hired&rdquo; tag name
+            </label>
+            <input
+              id="hired-tag-input"
+              type="text"
+              value={hiredTag}
+              onChange={(e) => setHiredTag(e.target.value)}
+              placeholder="recruitment - hire made"
+              className="w-full max-w-sm rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <p className="text-xs text-gray-500">
+              The tag text that marks a contact as hired. Emoji prefixes (e.g.{" "}
+              <span className="font-mono">🟢</span>) are stripped before
+              matching, so entering{" "}
+              <span className="font-mono">recruitment - hire made</span> matches
+              both{" "}
+              <span className="font-mono">🟢 recruitment - hire made</span> and{" "}
+              <span className="font-mono">recruitment - hire made</span>.
+            </p>
           </div>
 
           {ghlFile && (
