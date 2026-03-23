@@ -229,6 +229,7 @@ export default function ImportPage() {
   } | null>(null);
 
   const [processing, setProcessing] = useState(false);
+  const [step, setStep] = useState<string | null>(null);
   const [result, setResult] = useState<ImportResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -248,24 +249,82 @@ export default function ImportPage() {
     setError(null);
   }, []);
 
+  // Small yield so React re-renders the step label before the next sync op
+  const tick = () => new Promise<void>((r) => setTimeout(r, 60));
+
   const handleProcess = async () => {
     if (!ghlContent || !fbContent) return;
     setProcessing(true);
     setError(null);
+    setResult(null);
 
     try {
-      const res = await fetch("/api/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ghlCsv: ghlContent, fbCsv: fbContent }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Import failed");
+      // Step 1 — parse GHL CSV client-side for logging
+      setStep("Parsing GHL CSV…");
+      await tick();
+      const ghlLines = ghlContent.replace(/\r\n/g, "\n").split("\n").filter(Boolean);
+      console.log("[import] GHL CSV — lines:", ghlLines.length, "| headers:", ghlLines[0]);
+
+      // Step 2 — parse FB CSV client-side for logging
+      setStep("Parsing Facebook Ads CSV…");
+      await tick();
+      const fbLines = fbContent.replace(/\r\n/g, "\n").split("\n").filter(Boolean);
+      console.log("[import] FB CSV — lines:", fbLines.length, "| headers:", fbLines[0]);
+
+      // Step 3 — send to server (matching + upsert)
+      setStep("Matching ads to contacts…");
+      await tick();
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.error("[import] Fetch aborted after 10s timeout");
+        controller.abort();
+      }, 10_000);
+
+      let res: Response;
+      try {
+        res = await fetch("/api/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ghlCsv: ghlContent, fbCsv: fbContent }),
+          signal: controller.signal,
+        });
+      } catch (fetchErr) {
+        clearTimeout(timeoutId);
+        if (fetchErr instanceof Error && fetchErr.name === "AbortError") {
+          throw new Error(
+            "Processing timed out after 10 seconds. The server took too long — check server logs for details."
+          );
+        }
+        throw fetchErr;
+      }
+      clearTimeout(timeoutId);
+
+      console.log("[import] Server responded — status:", res.status);
+
+      let data: Record<string, unknown>;
+      try {
+        data = await res.json();
+      } catch (jsonErr) {
+        console.error("[import] Failed to parse server JSON:", jsonErr);
+        throw new Error(`Server returned non-JSON response (status ${res.status})`);
+      }
+
+      if (!res.ok) {
+        const msg = (data.error as string) ?? `Server error ${res.status}`;
+        console.error("[import] Server error response:", data);
+        throw new Error(msg);
+      }
+
+      console.log("[import] Done:", data);
       setResult(data as ImportResult);
     } catch (err) {
-      setError(String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[import] Import failed:", msg, err);
+      setError(msg);
     } finally {
       setProcessing(false);
+      setStep(null);
     }
   };
 
@@ -313,42 +372,68 @@ export default function ImportPage() {
 
       {/* Process button — appears only when both files are loaded */}
       {bothReady && !result && (
-        <div>
+        <div className="space-y-4">
           <button
             onClick={handleProcess}
             disabled={processing}
             className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50 transition-colors shadow-sm"
           >
             {processing && (
-              <svg
-                className="h-4 w-4 animate-spin"
-                viewBox="0 0 24 24"
-                fill="none"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8v8H4z"
-                />
+              <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
               </svg>
             )}
             {processing ? "Processing…" : "Process Files"}
           </button>
+
+          {/* Step indicators */}
+          {processing && (
+            <div className="rounded-xl border border-blue-200 bg-blue-50 px-5 py-4 space-y-2.5">
+              {[
+                "Parsing GHL CSV…",
+                "Parsing Facebook Ads CSV…",
+                "Matching ads to contacts…",
+              ].map((label) => {
+                const steps = [
+                  "Parsing GHL CSV…",
+                  "Parsing Facebook Ads CSV…",
+                  "Matching ads to contacts…",
+                ];
+                const currentIdx = steps.indexOf(step ?? "");
+                const thisIdx = steps.indexOf(label);
+                const isDone = thisIdx < currentIdx;
+                const isActive = thisIdx === currentIdx;
+                return (
+                  <div key={label} className="flex items-center gap-3">
+                    {isDone ? (
+                      <svg className="h-4 w-4 shrink-0 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                      </svg>
+                    ) : isActive ? (
+                      <svg className="h-4 w-4 shrink-0 animate-spin text-blue-500" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                      </svg>
+                    ) : (
+                      <span className="h-4 w-4 shrink-0 rounded-full border-2 border-gray-300" />
+                    )}
+                    <span className={`text-sm ${isActive ? "font-medium text-blue-800" : isDone ? "text-blue-700" : "text-gray-400"}`}>
+                      {label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
       {/* Error */}
       {error && (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-          {error}
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 space-y-1">
+          <p className="font-semibold">Import failed</p>
+          <p className="font-mono text-xs break-all">{error}</p>
         </div>
       )}
 

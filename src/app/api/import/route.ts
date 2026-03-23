@@ -80,47 +80,61 @@ export async function POST(request: NextRequest) {
   // -------------------------------------------------------------------------
   // 1. Facebook Ads CSV → ads + ad_spend
   // -------------------------------------------------------------------------
+  console.log("[import/api] Parsing Facebook Ads CSV...");
   const fbRows = parseCSV(fbCsv);
+  console.log("[import/api] FB rows parsed:", fbRows.length, "| keys:", Object.keys(fbRows[0] ?? {}));
+
   // Map lowercase ad name → internal UUID for contact matching
   const adNameToId = new Map<string, string>();
 
   for (const row of fbRows) {
     const adName =
       row["Ad name"] ?? row["Ad Name"] ?? row["ad name"] ?? "";
-    if (!adName.trim()) continue;
+    if (!adName.trim()) {
+      console.warn("[import/api] FB row missing ad name, skipping:", row);
+      continue;
+    }
 
     const fbAdId = slugify(adName);
     const spend = parseAmount(
       row["Amount spent"] ?? row["Amount Spent"] ?? "0"
     );
-    const impressions =
-      parseInt(row["Impressions"] ?? "0", 10) || 0;
+    const impressions = parseInt(row["Impressions"] ?? "0", 10) || 0;
     const clicks =
       parseInt(
         row["Clicks (all)"] ?? row["Clicks"] ?? row["clicks"] ?? "0",
         10
       ) || 0;
 
+    console.log(`[import/api] Upserting ad: "${adName}" (fb_ad_id=${fbAdId}) spend=${spend} impressions=${impressions} clicks=${clicks}`);
+
     // Upsert ad row
-    await supabase
+    const { error: adUpsertErr } = await supabase
       .from("ads")
       .upsert(
         { fb_ad_id: fbAdId, name: adName.trim(), status: "ACTIVE" },
         { onConflict: "fb_ad_id" }
       );
+    if (adUpsertErr) {
+      console.error("[import/api] ads upsert error for", adName, ":", adUpsertErr.message);
+    }
 
     // Fetch the UUID we just upserted
-    const { data: adRow } = await supabase
+    const { data: adRow, error: adFetchErr } = await supabase
       .from("ads")
       .select("id")
       .eq("fb_ad_id", fbAdId)
       .single();
+    if (adFetchErr) {
+      console.error("[import/api] ads fetch error for", fbAdId, ":", adFetchErr.message);
+    }
 
     if (adRow?.id) {
       adNameToId.set(adName.trim().toLowerCase(), adRow.id);
+      console.log(`[import/api] Ad UUID mapped: "${adName}" → ${adRow.id}`);
 
       // Upsert aggregate spend keyed by fb_ad_id + today
-      await supabase.from("ad_spend").upsert(
+      const { error: spendErr } = await supabase.from("ad_spend").upsert(
         {
           fb_ad_id: fbAdId,
           ad_id: adRow.id,
@@ -131,13 +145,23 @@ export async function POST(request: NextRequest) {
         },
         { onConflict: "fb_ad_id,date" }
       );
+      if (spendErr) {
+        console.error("[import/api] ad_spend upsert error for", fbAdId, ":", spendErr.message);
+      }
+    } else {
+      console.warn("[import/api] No UUID returned for ad:", adName);
     }
   }
+
+  console.log("[import/api] Ad name → UUID map:", Object.fromEntries(adNameToId));
 
   // -------------------------------------------------------------------------
   // 2. GHL Contacts CSV → contacts
   // -------------------------------------------------------------------------
+  console.log("[import/api] Parsing GHL Contacts CSV...");
   const ghlRows = parseCSV(ghlCsv);
+  console.log("[import/api] GHL rows parsed:", ghlRows.length, "| keys:", Object.keys(ghlRows[0] ?? {}));
+
   let contactsImported = 0;
   let adsMatched = 0;
   let hiredFound = 0;
@@ -149,19 +173,17 @@ export async function POST(request: NextRequest) {
     const email =
       (row["Email"] ?? row["email"] ?? "").trim().toLowerCase() || null;
 
-    if (!name && !email) continue;
+    if (!name && !email) {
+      console.warn("[import/api] GHL row has no name or email, skipping:", row);
+      continue;
+    }
 
     // Parse tags
     const rawTags = row["Tags"] ?? row["tags"] ?? "";
     const tags = rawTags
-      ? rawTags
-          .split(",")
-          .map((t: string) => t.trim())
-          .filter(Boolean)
+      ? rawTags.split(",").map((t: string) => t.trim()).filter(Boolean)
       : [];
-    const isHired = tags.some(
-      (t: string) => t.toLowerCase() === "hired"
-    );
+    const isHired = tags.some((t: string) => t.toLowerCase() === "hired");
 
     // Attribution fields
     const utmSource = row["utm_source"] || null;
@@ -173,23 +195,27 @@ export async function POST(request: NextRequest) {
     let adUuid: string | null = null;
     if (utmCampaign) {
       adUuid = adNameToId.get(utmCampaign.trim().toLowerCase()) ?? null;
-      if (adUuid) adsMatched++;
+      if (adUuid) {
+        adsMatched++;
+        console.log(`[import/api] Matched contact "${name}" utm_campaign="${utmCampaign}" → ad ${adUuid}`);
+      } else {
+        console.warn(`[import/api] No ad found for utm_campaign="${utmCampaign}" (contact: "${name}")`);
+      }
     }
 
     // hired_at: use Date Created if available, else now
     let hiredAt: string | null = null;
     if (isHired) {
-      const rawDate =
-        row["Date Created"] ?? row["date_created"] ?? "";
+      const rawDate = row["Date Created"] ?? row["date_created"] ?? "";
       hiredAt = rawDate
         ? new Date(rawDate).toISOString()
         : new Date().toISOString();
       hiredFound++;
+      console.log(`[import/api] Hired contact: "${name}" hired_at=${hiredAt}`);
     }
 
     // created_at from CSV date if available
-    const rawCreated =
-      row["Date Created"] ?? row["date_created"] ?? "";
+    const rawCreated = row["Date Created"] ?? row["date_created"] ?? "";
     const createdAt = rawCreated
       ? new Date(rawCreated).toISOString()
       : new Date().toISOString();
@@ -199,7 +225,7 @@ export async function POST(request: NextRequest) {
       ? `csv-${email.replace(/[^a-z0-9@._-]/g, "-")}`
       : `csv-${slugify(name ?? "unknown")}`;
 
-    const { error } = await supabase.from("contacts").upsert(
+    const { error: contactErr } = await supabase.from("contacts").upsert(
       {
         ghl_contact_id: ghlContactId,
         name,
@@ -216,8 +242,13 @@ export async function POST(request: NextRequest) {
       { onConflict: "ghl_contact_id" }
     );
 
-    if (!error) contactsImported++;
+    if (contactErr) {
+      console.error(`[import/api] contacts upsert error for "${name}" (${ghlContactId}):`, contactErr.message);
+    } else {
+      contactsImported++;
+    }
   }
 
+  console.log(`[import/api] Complete — contacts: ${contactsImported}, adsMatched: ${adsMatched}, hired: ${hiredFound}`);
   return NextResponse.json({ contactsImported, adsMatched, hiredFound });
 }
