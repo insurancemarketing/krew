@@ -68,7 +68,7 @@ async function getAdSpendTotal(
   supabase: ReturnType<typeof createServerClient>,
   adId: string
 ): Promise<number> {
-  const { data } = await supabase
+  const { data } = await (supabase as any)
     .from("ad_spend")
     .select("spend")
     .eq("ad_id", adId);
@@ -79,7 +79,7 @@ async function getAdSpendTotal(
 export async function getAdsWithStats(): Promise<AdRow[]> {
   const supabase = createServerClient();
 
-  const { data: ads, error } = await supabase
+  const { data: ads, error } = await (supabase as any)
     .from("ads")
     .select("id, fb_ad_id, name, status, campaign_id, ad_set_id")
     .order("created_at", { ascending: false });
@@ -90,7 +90,7 @@ export async function getAdsWithStats(): Promise<AdRow[]> {
 
   for (const ad of ads) {
     // Contacts attributed to this ad
-    const { data: contacts } = await supabase
+    const { data: contacts } = await (supabase as any)
       .from("contacts")
       .select("id, hired_at")
       .eq("fb_ad_id", ad.id);
@@ -124,16 +124,16 @@ export async function getAdsWithStats(): Promise<AdRow[]> {
 export async function getOverviewMetrics(): Promise<OverviewMetrics> {
   const supabase = createServerClient();
 
-  const { count: totalLeads } = await supabase
+  const { count: totalLeads } = await (supabase as any)
     .from("contacts")
     .select("id", { count: "exact", head: true });
 
-  const { count: totalHired } = await supabase
+  const { count: totalHired } = await (supabase as any)
     .from("contacts")
     .select("id", { count: "exact", head: true })
     .not("hired_at", "is", null);
 
-  const { data: spendData } = await supabase
+  const { data: spendData } = await (supabase as any)
     .from("ad_spend")
     .select("spend");
 
@@ -173,7 +173,7 @@ export async function getContacts(opts?: {
   const from = (page - 1) * perPage;
   const to = from + perPage - 1;
 
-  let query = supabase
+  let query = (supabase as any)
     .from("contacts")
     .select(
       `id, ghl_contact_id, name, email, utm_source, utm_medium, utm_campaign,
@@ -220,7 +220,7 @@ export async function getContacts(opts?: {
 export async function getAdDetail(adId: string): Promise<AdDetailRow | null> {
   const supabase = createServerClient();
 
-  const { data: ad } = await supabase
+  const { data: ad } = await (supabase as any)
     .from("ads")
     .select("*")
     .eq("id", adId)
@@ -229,7 +229,7 @@ export async function getAdDetail(adId: string): Promise<AdDetailRow | null> {
   if (!ad) return null;
 
   // All contacts
-  const { data: contacts } = await supabase
+  const { data: contacts } = await (supabase as any)
     .from("contacts")
     .select("id, name, email, hired_at, created_at")
     .eq("fb_ad_id", adId)
