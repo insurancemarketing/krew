@@ -21,7 +21,7 @@ export async function GET() {
   }
 
   // Mask values: return first 4 chars + ***
-  const masked = (data ?? []).map((row) => ({
+  const masked = ((data ?? []) as { key: string; value: string }[]).map((row) => ({
     key: row.key,
     value: row.value.length > 4 ? row.value.slice(0, 4) + "***" : "***",
     hasValue: Boolean(row.value),
