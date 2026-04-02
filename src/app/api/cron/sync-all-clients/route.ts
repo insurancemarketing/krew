@@ -1,21 +1,21 @@
 /**
- * POST /api/cron/sync-all-clients — sync all clients
- * Protected by CRON_SECRET header.
- * Set up as a Vercel Cron Job: every 6 hours
- *   vercel.json crons: path=/api/cron/sync-all-clients  schedule="0 * /6 * * *" (every 6h)
+ * GET /api/cron/sync-all-clients — sync all clients
+ * Called by Vercel Cron every 6 hours.
+ * Vercel sends: GET with Authorization: Bearer <CRON_SECRET>
  */
 import { NextRequest, NextResponse } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { decrypt } from "@/lib/encrypt";
 import { fetchAllContacts, contactIsHired } from "@/lib/ghl";
 
-export async function POST(request: NextRequest) {
-  // Verify cron secret
-  const secret = request.headers.get("x-cron-secret") ??
-    request.nextUrl.searchParams.get("secret");
+export async function GET(request: NextRequest) {
+  // Verify Vercel cron secret (Authorization: Bearer <CRON_SECRET>)
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret && secret !== cronSecret) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (cronSecret) {
+    const authHeader = request.headers.get("authorization");
+    if (authHeader !== `Bearer ${cronSecret}`) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
   }
 
   const db = createAdminClient();
