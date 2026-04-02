@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 const navItems = [
   {
     href: "/dashboard",
-    label: "Overview",
+    exact: true,
+    label: "All Clients",
     icon: (
       <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -15,22 +16,23 @@ const navItems = [
     ),
   },
   {
-    href: "/dashboard/contacts",
-    label: "Contacts",
+    href: "/earnings",
+    exact: false,
+    label: "Earnings",
     icon: (
       <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-          d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+          d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
       </svg>
     ),
   },
   {
-    href: "/dashboard/import",
-    label: "Import",
+    href: "/dashboard/clients/new",
+    exact: false,
+    label: "Add Client",
     icon: (
       <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-          d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
       </svg>
     ),
   },
@@ -38,6 +40,12 @@ const navItems = [
 
 export default function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+
+  const handleLogout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" });
+    router.push("/login");
+  };
 
   return (
     <>
@@ -46,15 +54,14 @@ export default function Sidebar() {
         <div className="flex h-16 items-center border-b border-gray-200 px-6">
           <span className="text-xl font-bold text-gray-900">Krew</span>
           <span className="ml-2 text-xs rounded-full bg-blue-100 text-blue-700 px-2 py-0.5 font-medium">
-            Attribution
+            Dashboard
           </span>
         </div>
         <nav className="flex-1 overflow-y-auto p-4 space-y-1">
           {navItems.map((item) => {
-            const isActive =
-              item.href === "/dashboard"
-                ? pathname === "/dashboard"
-                : pathname.startsWith(item.href);
+            const isActive = item.exact
+              ? pathname === item.href
+              : pathname.startsWith(item.href);
             return (
               <Link
                 key={item.href}
@@ -71,28 +78,35 @@ export default function Sidebar() {
             );
           })}
         </nav>
-        <div className="border-t border-gray-200 p-4">
-          <p className="text-xs text-gray-400">Ad Attribution Dashboard</p>
+        <div className="border-t border-gray-200 p-4 space-y-2">
+          <button
+            onClick={handleLogout}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-gray-500 hover:bg-gray-50 hover:text-gray-700 transition-colors"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+            Sign out
+          </button>
+          <p className="text-xs text-gray-400 px-3">Internal use only</p>
         </div>
       </aside>
 
       {/* Mobile top bar */}
       <div className="lg:hidden sticky top-0 z-10 flex h-14 items-center justify-between border-b border-gray-200 bg-white px-4">
-        <span className="text-lg font-bold text-gray-900">Krew Attribution</span>
+        <span className="text-lg font-bold text-gray-900">Krew</span>
         <nav className="flex items-center gap-1">
           {navItems.map((item) => {
-            const isActive =
-              item.href === "/dashboard"
-                ? pathname === "/dashboard"
-                : pathname.startsWith(item.href);
+            const isActive = item.exact
+              ? pathname === item.href
+              : pathname.startsWith(item.href);
             return (
               <Link
                 key={item.href}
                 href={item.href}
                 className={`rounded-lg p-2 transition-colors ${
-                  isActive
-                    ? "bg-blue-50 text-blue-700"
-                    : "text-gray-500 hover:bg-gray-50"
+                  isActive ? "bg-blue-50 text-blue-700" : "text-gray-500 hover:bg-gray-50"
                 }`}
                 title={item.label}
               >
@@ -100,6 +114,16 @@ export default function Sidebar() {
               </Link>
             );
           })}
+          <button
+            onClick={handleLogout}
+            className="rounded-lg p-2 text-gray-500 hover:bg-gray-50"
+            title="Sign out"
+          >
+            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+          </button>
         </nav>
       </div>
     </>

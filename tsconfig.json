@@ -2,6 +2,7 @@
   "compilerOptions": {
     "target": "es2015",
     "lib": ["es2015", "dom"],
+    "types": ["node"],
     "downlevelIteration": true,
     "allowJs": true,
     "skipLibCheck": true,

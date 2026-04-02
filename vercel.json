@@ -1,1 +1,1 @@
-{}
+{"crons":[{"path":"/api/cron/sync-all-clients","schedule":"0 */6 * * *"}]}

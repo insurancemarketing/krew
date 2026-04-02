@@ -1,394 +1,235 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import MetricCard from "@/components/ui/MetricCard";
-import AdsBarChart from "@/components/dashboard/AdsBarChart";
-import AdsTable from "@/components/dashboard/AdsTable";
-import PeriodComparison from "@/components/dashboard/PeriodComparison";
-import {
-  MetricCardSkeleton,
-  TableSkeleton,
-  ChartSkeleton,
-} from "@/components/ui/Skeleton";
-import {
-  loadPeriods,
-  metricsFromAds,
-  deleteAllPeriods,
-  deletePeriod,
-  type ImportPeriod,
-  type PeriodMetrics,
-} from "@/lib/localData";
-import type { AdRow } from "@/lib/data";
+import Link from "next/link";
 
-function fmt(n: number) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(n);
+interface ClientSummary {
+  id: string;
+  name: string;
+  last_synced: string | null;
+  sync_status: string;
+  totalLeads: number;
+  hiresMtd: number;
+  bestAd: string | null;
+  costPerHire: number;
+  earnings: number;
+  statusColor: "green" | "yellow" | "red";
 }
 
-function DeltaBadge({ a, b, lowerIsBetter = false }: { a: number; b: number; lowerIsBetter?: boolean }) {
-  if (b === 0 && a === 0) return null;
-  const diff = a - b;
-  if (diff === 0) return <span className="text-xs text-gray-400">no change</span>;
-  const pct = b !== 0 ? Math.round(Math.abs((diff / b) * 100)) : null;
-  const up = diff > 0;
-  const positive = lowerIsBetter ? !up : up;
-  return (
-    <span className={`text-xs font-medium ${positive ? "text-green-600" : "text-red-500"}`}>
-      {up ? "↑" : "↓"} {Math.abs(diff)}{pct !== null ? ` (${pct}%)` : ""}
-    </span>
-  );
+function StatusDot({ color }: { color: "green" | "yellow" | "red" }) {
+  const cls = { green: "bg-green-500", yellow: "bg-yellow-400", red: "bg-red-500" }[color];
+  return <span className={`inline-block h-2.5 w-2.5 rounded-full ${cls}`} />;
 }
 
-export default function DashboardPage() {
-  const [periods, setPeriods] = useState<ImportPeriod[]>([]);
-  const [selectedId, setSelectedId] = useState<string>("");
-  const [compareId, setCompareId] = useState<string>("");
-  const [supabaseAds, setSupabaseAds] = useState<AdRow[] | null>(null);
-  const [supabaseMetrics, setSupabaseMetrics] = useState<PeriodMetrics | null>(null);
+function fmtCurrency(n: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
+}
+
+function timeAgo(iso: string | null): string {
+  if (!iso) return "Never";
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60) return "Just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+export default function MasterDashboard() {
+  const [clients, setClients] = useState<ClientSummary[]>([]);
   const [loading, setLoading] = useState(true);
-  const [clearing, setClearing] = useState(false);
+  const [syncing, setSyncing] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
 
-  // Load periods from localStorage + try Supabase
-  useEffect(() => {
-    const local = loadPeriods();
-    setPeriods(local);
-    if (local.length > 0) setSelectedId(local[0].id);
-
-    // Also try Supabase in the background
-    fetch("/api/dashboard-stats")
-      .then((r) => r.ok ? r.json() : null)
-      .then((data) => {
-        if (data && Array.isArray(data.ads) && data.ads.length > 0) {
-          setSupabaseAds(data.ads as AdRow[]);
-          setSupabaseMetrics(data.metrics as PeriodMetrics);
-        }
-      })
-      .catch(() => {})
-      .then(() => setLoading(false));
-
-    if (local.length === 0) setLoading(false);
-  }, []);
-
-  const handleDeletePeriod = (id: string) => {
-    if (!confirm("Delete this period? This cannot be undone.")) return;
-    deletePeriod(id);
-    const updated = periods.filter((p) => p.id !== id);
-    setPeriods(updated);
-    if (selectedId === id) setSelectedId(updated[0]?.id ?? "");
-    if (compareId === id) setCompareId("");
-  };
-
-  const handleClearAll = async () => {
-    if (!confirm("Clear all import data and all periods? This cannot be undone.")) return;
-    setClearing(true);
-    deleteAllPeriods();
-    // Try Supabase clear too
+  const loadDashboard = async () => {
     try {
-      await fetch("/api/dashboard-stats/clear", { method: "POST" });
-    } catch {}
-    setPeriods([]);
-    setSelectedId("");
-    setCompareId("");
-    setSupabaseAds(null);
-    setSupabaseMetrics(null);
-    setClearing(false);
+      const res = await fetch("/api/clients");
+      const { clients: rawClients } = await res.json();
+      if (!rawClients) return;
+
+      // Fetch stats for each client in parallel
+      const summaries = await Promise.all(
+        rawClients.map(async (c: Record<string, unknown>) => {
+          try {
+            const statsRes = await fetch(`/api/clients/${c.id}/stats`);
+            const stats = statsRes.ok ? await statsRes.json() : null;
+
+            const metrics = stats?.metrics ?? {};
+            const attribution = stats?.attribution ?? [];
+            const costPerHire = attribution.length > 0
+              ? attribution.reduce((sum: number, a: Record<string, number>) => sum + (a.spend ?? 0), 0) /
+                Math.max(attribution.reduce((sum: number, a: Record<string, number>) => sum + (a.hired ?? 0), 0), 1)
+              : 0;
+
+            const bestAd = attribution.length > 0
+              ? attribution.filter((a: Record<string, number>) => a.hired > 0)
+                  .sort((a: Record<string, number>, b: Record<string, number>) => (a.cost_per_hire || 999999) - (b.cost_per_hire || 999999))[0]?.utm_content ?? null
+              : null;
+
+            let statusColor: "green" | "yellow" | "red" = "green";
+            const now = Date.now();
+            const lastHireDate = stats?.attribution
+              ?.flatMap((a: Record<string, unknown[]>) => a.hiredDates ?? [])
+              .map((d: unknown) => new Date(d as string).getTime())
+              .sort((a: number, b: number) => b - a)[0];
+            const noHire7d = !lastHireDate || (now - lastHireDate) > 7 * 86400 * 1000;
+
+            if (costPerHire > 200 || (noHire7d && metrics.totalHired > 0)) statusColor = "red";
+            else if (costPerHire > 150) statusColor = "yellow";
+
+            return {
+              id: c.id as string,
+              name: c.name as string,
+              last_synced: c.last_synced as string | null,
+              sync_status: c.sync_status as string,
+              totalLeads: metrics.totalLeads ?? 0,
+              hiresMtd: metrics.hiresMtd ?? 0,
+              bestAd,
+              costPerHire: costPerHire > 0 ? costPerHire : 0,
+              earnings: metrics.earningsMtd ?? 0,
+              statusColor,
+            } as ClientSummary;
+          } catch {
+            return {
+              id: c.id as string,
+              name: c.name as string,
+              last_synced: c.last_synced as string | null,
+              sync_status: c.sync_status as string,
+              totalLeads: 0, hiresMtd: 0, bestAd: null,
+              costPerHire: 0, earnings: 0,
+              statusColor: "red" as const,
+            };
+          }
+        })
+      );
+      setClients(summaries);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
+    }
   };
 
-  // Resolve the data to display
-  const selectedPeriod = periods.find((p) => p.id === selectedId) ?? null;
-  const comparePeriod = compareId ? (periods.find((p) => p.id === compareId) ?? null) : null;
+  useEffect(() => { loadDashboard(); }, []);
 
-  // Prefer localStorage period data; use Supabase only when no local periods at all
-  const displayAds = selectedPeriod
-    ? (selectedPeriod.ads as unknown as AdRow[])
-    : (supabaseAds ?? []);
+  const handleSync = async (clientId: string) => {
+    setSyncing((s) => new Set(s).add(clientId));
+    try {
+      await fetch(`/api/clients/${clientId}/sync`, { method: "POST" });
+      await loadDashboard();
+    } finally {
+      setSyncing((s) => { const n = new Set(s); n.delete(clientId); return n; });
+    }
+  };
 
-  const displayMetrics: PeriodMetrics = selectedPeriod
-    ? metricsFromAds(selectedPeriod.ads)
-    : (supabaseMetrics ?? { totalLeads: 0, totalHired: 0, totalSpend: 0, avgCostPerHire: 0, bestAd: null });
-
-  const compareMetrics: PeriodMetrics | null = comparePeriod
-    ? metricsFromAds(comparePeriod.ads)
-    : null;
-
-  const usingSupabase = !selectedPeriod && (supabaseAds?.length ?? 0) > 0;
-  const hasData = displayAds.length > 0;
-
-  const chartData = displayAds.map((ad) => ({
-    name: ad.name,
-    leads: ad.total_leads,
-    hired: ad.total_hired,
-  }));
+  const totalEarnings = clients.reduce((s, c) => s + c.earnings, 0);
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Overview</h1>
-          <p className="mt-1 text-sm text-gray-500">
-            Track which Facebook ads are driving hired clients.
-          </p>
+          <h1 className="text-2xl font-bold text-gray-900">All Clients</h1>
+          <p className="mt-1 text-sm text-gray-500">Overview of all active client accounts.</p>
         </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Period selector */}
-          {periods.length > 0 && (
-            <div className="flex items-center gap-1.5">
-              <label className="text-xs font-medium text-gray-500 whitespace-nowrap">Period:</label>
-              <select
-                value={selectedId}
-                onChange={(e) => {
-                  setSelectedId(e.target.value);
-                  if (e.target.value === compareId) setCompareId("");
-                }}
-                className="rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
-              >
-                {periods.map((p) => (
-                  <option key={p.id} value={p.id}>{p.label}</option>
-                ))}
-              </select>
-              <button
-                onClick={() => selectedId && handleDeletePeriod(selectedId)}
-                title="Delete this period"
-                className="rounded p-1 text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
-              >
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-          )}
-
-          {/* Compare selector */}
-          {periods.length > 1 && (
-            <div className="flex items-center gap-1.5">
-              <label className="text-xs font-medium text-gray-500 whitespace-nowrap">vs:</label>
-              <select
-                value={compareId}
-                onChange={(e) => setCompareId(e.target.value)}
-                className="rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
-              >
-                <option value="">— none —</option>
-                {periods
-                  .filter((p) => p.id !== selectedId)
-                  .map((p) => (
-                    <option key={p.id} value={p.id}>{p.label}</option>
-                  ))}
-              </select>
-            </div>
-          )}
-
-          {usingSupabase && (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 border border-blue-200 px-2.5 py-1 text-xs font-medium text-blue-700">
-              <span className="h-1.5 w-1.5 rounded-full bg-blue-400 shrink-0" />
-              Supabase
+        <div className="flex items-center gap-3">
+          {totalEarnings > 0 && (
+            <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full bg-green-50 border border-green-200 px-3 py-1 text-sm font-semibold text-green-700">
+              {fmtCurrency(totalEarnings)} MTD
             </span>
           )}
-
-          {hasData && (
-            <button
-              onClick={handleClearAll}
-              disabled={clearing}
-              title="Clear all import data"
-              className="hidden sm:inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 transition-colors shadow-sm disabled:opacity-50"
-            >
-              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-              </svg>
-              {clearing ? "Clearing…" : "Clear All"}
-            </button>
-          )}
-
-          <a
-            href="/dashboard/import"
-            className="inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors shadow-sm"
+          <Link
+            href="/dashboard/clients/new"
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 transition-colors shadow-sm"
           >
             <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
-            Import Data
-          </a>
+            Add Client
+          </Link>
         </div>
       </div>
 
-      {/* Metric cards */}
-      {loading ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => <MetricCardSkeleton key={i} />)}
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard
-            title="Total Leads"
-            value={displayMetrics.totalLeads.toLocaleString()}
-            subtitle={
-              compareMetrics
-                ? (() => {
-                    const diff = displayMetrics.totalLeads - compareMetrics.totalLeads;
-                    const pct = compareMetrics.totalLeads > 0 ? Math.round(Math.abs(diff / compareMetrics.totalLeads) * 100) : null;
-                    if (diff === 0) return `Same as ${comparePeriod!.label}`;
-                    return `${diff > 0 ? "+" : ""}${diff}${pct !== null ? ` (${pct}%)` : ""} vs ${comparePeriod!.label}`;
-                  })()
-                : "All contacts attributed to ads"
-            }
-            icon={
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            }
-          />
-          <MetricCard
-            title="Total Hired"
-            value={displayMetrics.totalHired.toLocaleString()}
-            subtitle={
-              compareMetrics
-                ? (() => {
-                    const diff = displayMetrics.totalHired - compareMetrics.totalHired;
-                    const pct = compareMetrics.totalHired > 0 ? Math.round(Math.abs(diff / compareMetrics.totalHired) * 100) : null;
-                    if (diff === 0) return `Same as ${comparePeriod!.label}`;
-                    return `${diff > 0 ? "+" : ""}${diff}${pct !== null ? ` (${pct}%)` : ""} vs ${comparePeriod!.label}`;
-                  })()
-                : "Contacts tagged as hired"
-            }
-            icon={
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            }
-          />
-          <MetricCard
-            title="Avg. Cost / Hire"
-            value={displayMetrics.avgCostPerHire > 0 ? fmt(displayMetrics.avgCostPerHire) : "—"}
-            subtitle={
-              compareMetrics && displayMetrics.avgCostPerHire > 0 && compareMetrics.avgCostPerHire > 0
-                ? (() => {
-                    const diff = displayMetrics.avgCostPerHire - compareMetrics.avgCostPerHire;
-                    const pct = Math.round(Math.abs(diff / compareMetrics.avgCostPerHire) * 100);
-                    if (diff === 0) return `Same as ${comparePeriod!.label}`;
-                    const better = diff < 0;
-                    return `${better ? "▼" : "▲"} ${fmt(Math.abs(diff))} (${pct}%) vs ${comparePeriod!.label}`;
-                  })()
-                : "Total ad spend ÷ total hired"
-            }
-            icon={
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            }
-          />
-          <MetricCard
-            title="Best Performing Ad"
-            value={displayMetrics.bestAd ? `${displayMetrics.bestAd.winRate.toFixed(0)}% win rate` : "—"}
-            subtitle={displayMetrics.bestAd?.name ?? "Need ≥3 leads per ad"}
-            highlight={!!displayMetrics.bestAd}
-            icon={
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                  d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
-              </svg>
-            }
-          />
-        </div>
+      {error && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div>
       )}
 
-      {/* Bar chart — always shows selected period */}
-      {loading ? <ChartSkeleton /> : <AdsBarChart data={chartData} />}
-
-      {/* Ads table or comparison */}
-      <div>
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-base font-semibold text-gray-900">
-            {comparePeriod
-              ? `Comparing ${selectedPeriod?.label ?? "current"} vs ${comparePeriod.label}`
-              : "Ad Performance"}
-          </h2>
-          {comparePeriod && (
-            <button
-              onClick={() => setCompareId("")}
-              className="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
-            >
-              <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-              Exit compare
-            </button>
-          )}
-        </div>
-        {loading ? (
-          <TableSkeleton rows={6} cols={7} />
-        ) : comparePeriod && selectedPeriod ? (
-          <PeriodComparison
-            periodA={{ label: selectedPeriod.label, ads: selectedPeriod.ads }}
-            periodB={{ label: comparePeriod.label, ads: comparePeriod.ads }}
-          />
-        ) : (
-          <AdsTable ads={displayAds} />
-        )}
-      </div>
-
-      {/* Periods list (visible when > 1 period) */}
-      {periods.length > 1 && (
-        <div>
-          <h2 className="mb-3 text-base font-semibold text-gray-900">All Periods</h2>
-          <div className="rounded-xl border border-gray-200 bg-white shadow-sm overflow-hidden">
-            <table className="min-w-full text-sm divide-y divide-gray-100">
-              <thead className="bg-gray-50">
+      {/* Clients table */}
+      <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-100 text-sm">
+            <thead className="bg-gray-50">
+              <tr>
+                {["Client", "Leads", "Hires MTD", "Best Ad", "Cost/Hire", "Your Earnings", "Last Sync", "Status", ""].map((h) => (
+                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-gray-500 whitespace-nowrap">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {loading ? (
+                Array.from({ length: 3 }).map((_, i) => (
+                  <tr key={i}>
+                    {Array.from({ length: 9 }).map((_, j) => (
+                      <td key={j} className="px-4 py-3">
+                        <div className="h-4 bg-gray-100 rounded animate-pulse w-20" />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              ) : clients.length === 0 ? (
                 <tr>
-                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase">Period</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase">Imported</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase">Ads</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase">Leads</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase">Hired</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase"></th>
+                  <td colSpan={9} className="px-4 py-12 text-center text-gray-400">
+                    No clients yet.{" "}
+                    <Link href="/dashboard/clients/new" className="text-blue-600 hover:underline">Add your first client →</Link>
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {periods.map((p) => {
-                  const m = metricsFromAds(p.ads);
-                  const isSelected = p.id === selectedId;
-                  return (
-                    <tr
-                      key={p.id}
-                      className={`cursor-pointer hover:bg-blue-50/40 transition-colors ${isSelected ? "bg-blue-50" : ""}`}
-                      onClick={() => setSelectedId(p.id)}
-                    >
-                      <td className="px-4 py-2.5 font-medium text-gray-800 flex items-center gap-2">
-                        {isSelected && <span className="h-1.5 w-1.5 rounded-full bg-blue-500 shrink-0" />}
-                        {p.label}
-                      </td>
-                      <td className="px-4 py-2.5 text-gray-500 text-xs">
-                        {new Date(p.importedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
-                      </td>
-                      <td className="px-4 py-2.5 text-gray-600">{p.ads.length}</td>
-                      <td className="px-4 py-2.5 text-gray-600">{m.totalLeads.toLocaleString()}</td>
-                      <td className="px-4 py-2.5 text-gray-600">{m.totalHired}</td>
-                      <td className="px-4 py-2.5 text-right">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); handleDeletePeriod(p.id); }}
-                          className="rounded p-1 text-gray-300 hover:text-red-500 hover:bg-red-50 transition-colors"
-                          title="Delete period"
-                        >
-                          <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+              ) : (
+                clients.map((c) => (
+                  <tr key={c.id} className="hover:bg-gray-50 transition-colors cursor-pointer">
+                    <td className="px-4 py-3">
+                      <Link href={`/dashboard/${c.id}`} className="font-medium text-blue-600 hover:underline">
+                        {c.name}
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3 text-gray-700">{c.totalLeads.toLocaleString()}</td>
+                    <td className="px-4 py-3 text-gray-700 font-medium">{c.hiresMtd}</td>
+                    <td className="px-4 py-3 text-gray-600 max-w-[160px] truncate" title={c.bestAd ?? ""}>
+                      {c.bestAd ? (
+                        <span className="font-mono text-xs bg-gray-100 px-1.5 py-0.5 rounded">{c.bestAd}</span>
+                      ) : "—"}
+                    </td>
+                    <td className="px-4 py-3 text-gray-700">
+                      {c.costPerHire > 0 ? fmtCurrency(c.costPerHire) : "—"}
+                    </td>
+                    <td className="px-4 py-3 font-semibold text-green-700">
+                      {c.earnings > 0 ? fmtCurrency(c.earnings) : "—"}
+                    </td>
+                    <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
+                      {timeAgo(c.last_synced)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <StatusDot color={c.statusColor} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={(e) => { e.preventDefault(); handleSync(c.id); }}
+                        disabled={syncing.has(c.id) || c.sync_status === "syncing"}
+                        className="inline-flex items-center gap-1.5 rounded-md border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100 disabled:opacity-50 transition-colors"
+                      >
+                        <svg className={`h-3.5 w-3.5 ${syncing.has(c.id) ? "animate-spin" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        {syncing.has(c.id) ? "Syncing…" : "Sync"}
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
-      )}
+      </div>
     </div>
   );
 }
