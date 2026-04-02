@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * GET /api/cron/sync-all-clients — sync all clients
  * Called by Vercel Cron every 6 hours.

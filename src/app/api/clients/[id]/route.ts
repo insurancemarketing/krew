@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * GET  /api/clients/[id]  — get single client
  * PUT  /api/clients/[id]  — update client

@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * GET /api/clients/[id]/stats — all aggregated stats for the client dashboard
  *

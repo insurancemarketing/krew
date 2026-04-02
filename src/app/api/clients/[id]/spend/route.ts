@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * GET  /api/clients/[id]/spend — list spend entries
  * POST /api/clients/[id]/spend — add a spend entry

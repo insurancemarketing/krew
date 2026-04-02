@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * POST /api/clients/[id]/sync — pull all contacts from GHL and upsert into DB
  */

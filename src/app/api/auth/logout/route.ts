@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { NextResponse } from "next/server";
 import { AUTH_COOKIE } from "@/lib/auth";
 

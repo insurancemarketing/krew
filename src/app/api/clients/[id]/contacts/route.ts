@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * GET /api/clients/[id]/contacts — paginated, filterable contact list
  * Query params: page, perPage, utm_content, is_hired, stage, search, date_from, date_to

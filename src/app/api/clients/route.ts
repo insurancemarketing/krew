@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 /**
  * GET  /api/clients  — list all clients (api keys masked)
  * POST /api/clients  — create client
