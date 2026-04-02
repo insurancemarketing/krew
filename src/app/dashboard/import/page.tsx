@@ -4,9 +4,8 @@ import { useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabaseClient } from "@/lib/supabase/client";
 import {
-  saveToLocalStorage,
+  saveAsPeriod,
   type LocalAdStat,
-  type LocalImportData,
 } from "@/lib/localData";
 
 // ---------------------------------------------------------------------------
@@ -392,6 +391,12 @@ interface ImportResult {
 export default function ImportPage() {
   const router = useRouter();
 
+  // Period label (for tracking over time)
+  const [periodLabel, setPeriodLabel] = useState(() => {
+    const d = new Date();
+    return d.toLocaleString("en-US", { month: "long", year: "numeric" });
+  });
+
   // Hired tag (customizable)
   const [hiredTag, setHiredTag] = useState("recruitment - hire made");
 
@@ -571,11 +576,7 @@ export default function ImportPage() {
       );
 
       // Save to localStorage FIRST — works even if Supabase is unavailable
-      const localData: LocalImportData = {
-        importedAt: new Date().toISOString(),
-        ads: localAds,
-      };
-      saveToLocalStorage(localData);
+      saveAsPeriod(localAds, periodLabel);
 
       // Step 3 — Save to Supabase (best-effort)
       setStep("Saving to Supabase…");
@@ -739,6 +740,25 @@ export default function ImportPage() {
                 optional
               />
             </div>
+          </div>
+
+          {/* Period label */}
+          <div className="rounded-xl border border-gray-200 bg-white p-5 shadow-sm space-y-2">
+            <label className="text-sm font-semibold text-gray-800" htmlFor="period-label-input">
+              Period name
+            </label>
+            <input
+              id="period-label-input"
+              type="text"
+              value={periodLabel}
+              onChange={(e) => setPeriodLabel(e.target.value)}
+              placeholder="April 2026"
+              className="w-full max-w-xs rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <p className="text-xs text-gray-500">
+              Name this import snapshot so you can compare it against other periods on the
+              dashboard. Importing with the same name will replace the existing period.
+            </p>
           </div>
 
           {/* Hired tag config */}
