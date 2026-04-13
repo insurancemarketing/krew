@@ -7,7 +7,9 @@ export async function POST(request: NextRequest) {
   const secret = getAuthSecret();
 
   if (!password || password !== secret) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const res = NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    res.cookies.set(AUTH_COOKIE, "", { maxAge: 0, path: "/" });
+    return res;
   }
 
   const response = NextResponse.json({ ok: true });
