@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import ClientTabs from "@/components/layout/ClientTabs";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 interface AttrRow {
@@ -270,6 +271,9 @@ export default function ClientDashboard() {
           </button>
         </div>
       </div>
+
+      {/* Tab nav */}
+      <ClientTabs clientId={clientId} />
 
       {/* Smart Alerts */}
       {alerts.length > 0 && (

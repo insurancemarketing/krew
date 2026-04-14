@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import ClientTabs from "@/components/layout/ClientTabs";
+import ContractForm from "@/components/settings/ContractForm";
 
 interface SpendEntry {
   id: string;
@@ -126,6 +128,8 @@ export default function ClientSettings() {
         <span className="text-gray-800">Settings</span>
       </div>
 
+      <ClientTabs clientId={clientId} />
+
       {/* Client form */}
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
         <div className="px-6 py-4 border-b border-gray-100">
@@ -205,6 +209,9 @@ export default function ClientSettings() {
           </button>
         </form>
       </div>
+
+      {/* Contract form */}
+      <ContractForm clientId={clientId} />
 
       {/* Spend table */}
       <div className="rounded-xl border border-gray-200 bg-white shadow-sm">
