@@ -16,7 +16,7 @@ export async function GET(
     const db = createAdminClient();
     const { data, error } = await db
       .from("krew_clients")
-      .select("id, name, ghl_location_id, hired_tag, payout_per_hire, fb_spend_manual, last_synced, sync_status, sync_error, created_at")
+      .select("id, name, client_type, ghl_location_id, hired_tag, payout_per_hire, fb_spend_manual, last_synced, sync_status, sync_error, created_at")
       .eq("id", params.id)
       .single();
 
@@ -34,7 +34,7 @@ export async function PUT(
 ) {
   try {
     const body = await request.json();
-    const { name, ghl_api_key, ghl_location_id, hired_tag, payout_per_hire } = body;
+    const { name, ghl_api_key, ghl_location_id, hired_tag, payout_per_hire, client_type } = body;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updates: Record<string, any> = {};
@@ -42,6 +42,7 @@ export async function PUT(
     if (ghl_location_id !== undefined) updates.ghl_location_id = ghl_location_id.trim();
     if (hired_tag !== undefined) updates.hired_tag = hired_tag.trim();
     if (payout_per_hire !== undefined) updates.payout_per_hire = parseFloat(payout_per_hire) || 0;
+    if (client_type !== undefined) updates.client_type = client_type;
     if (ghl_api_key !== undefined && ghl_api_key.trim()) {
       updates.ghl_api_key = encrypt(ghl_api_key.trim());
     }
@@ -51,7 +52,7 @@ export async function PUT(
       .from("krew_clients")
       .update(updates)
       .eq("id", params.id)
-      .select("id, name, ghl_location_id, hired_tag, payout_per_hire, created_at")
+      .select("id, name, client_type, ghl_location_id, hired_tag, payout_per_hire, created_at")
       .single();
 
     if (error) throw error;
