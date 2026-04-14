@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import ClientTabs from "@/components/layout/ClientTabs";
 
 interface Contact {
   id: string;
@@ -124,6 +125,8 @@ export default function ContactsPage() {
         <span>/</span>
         <span className="text-gray-800">Contacts</span>
       </div>
+
+      <ClientTabs clientId={clientId} />
 
       {/* Header */}
       <div className="flex items-center justify-between">
