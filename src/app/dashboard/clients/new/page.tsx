@@ -52,11 +52,20 @@ export default function NewClientPage() {
           hired_tag: hiredTag, payout_per_hire: payout,
         }),
       });
-      const data = await res.json();
-      if (res.ok && data.client) {
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.client) {
         router.push(`/dashboard/${data.client.id}`);
       } else {
-        setError(data.error ?? "Failed to create client.");
+        const raw = data?.error;
+        const msg =
+          typeof raw === "string"
+            ? raw
+            : raw?.message
+            ? String(raw.message)
+            : raw
+            ? JSON.stringify(raw)
+            : `Failed to create client (HTTP ${res.status}).`;
+        setError(msg);
       }
     } finally {
       setSaving(false);
